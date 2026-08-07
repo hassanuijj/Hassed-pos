@@ -25,6 +25,8 @@ class PurchaseLine:
         quantity = Decimal(str(self.quantity))
         cost = money(self.unit_cost)
         discount = money(self.discount)
+        if self.product_id <= 0:
+            raise ValidationError("الصنف في سطر المشتريات غير صالح.")
         if quantity <= 0 or cost < 0 or discount < 0:
             raise ValidationError("بيانات سطر المشتريات غير صالحة.")
         gross = money(quantity * cost)
@@ -44,9 +46,28 @@ class PurchaseEngine:
     def calculate(self, lines: tuple[PurchaseLine, ...]) -> PurchaseTotals:
         if not lines:
             raise ValidationError("فاتورة المشتريات يجب أن تحتوي على صنف واحد على الأقل.")
-        subtotal = money(sum((money(Decimal(str(x.quantity)) * Decimal(str(x.unit_cost))) for x in lines), Decimal("0")))
-        discount = money(sum((money(x.discount) for x in lines), Decimal("0")))
-        return PurchaseTotals(subtotal, discount, money(subtotal - discount))
+
+        subtotal = Decimal("0")
+        discount = Decimal("0")
+        for line in lines:
+            quantity = Decimal(str(line.quantity))
+            unit_cost = money(line.unit_cost)
+            line_discount = money(line.discount)
+
+            # Evaluate the line through the canonical validation path before
+            # aggregating it. This prevents invalid quantities, costs,
+            # discounts, and product ids from bypassing PurchaseLine.total.
+            line.total
+
+            subtotal += money(quantity * unit_cost)
+            discount += line_discount
+
+        subtotal = money(subtotal)
+        discount = money(discount)
+        total = money(subtotal - discount)
+        if total <= 0:
+            raise ValidationError("إجمالي فاتورة المشتريات يجب أن يكون أكبر من صفر.")
+        return PurchaseTotals(subtotal, discount, total)
 
     def receive(self, ledger: StockLedger, line: PurchaseLine) -> Decimal:
         total = line.total
