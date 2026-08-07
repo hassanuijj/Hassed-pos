@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from accounting.journal import JournalEntry, JournalLine, validate_lines
 from core.exceptions import ValidationError
-from models import AuditLog, Product, StockBalance, StockMovement
+from inventory.stock import StockService
+from models import AuditLog
 from sales.models import SalesInvoice, SalesInvoiceLine
 from app.services.pos_checkout import CheckoutRequest, POSCheckoutService
 
@@ -32,6 +32,8 @@ class SalesAccountMap:
     sales_account_id: int
     inventory_account_id: int
     cogs_account_id: int
+    bank_account_id: int | None = None
+    card_account_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,21 @@ class SalesPostingService:
         self.session = session
         self.accounts = accounts
         self.calculator = POSCheckoutService()
+        self.stock = StockService(session)
+
+    def _payment_account(self, method: str) -> int:
+        method = method.upper()
+        if method == "CASH":
+            return self.accounts.cash_account_id
+        if method == "BANK":
+            if self.accounts.bank_account_id is None:
+                raise ValidationError("يجب إعداد حساب البنك قبل البيع بالدفع البنكي.")
+            return self.accounts.bank_account_id
+        if method == "CARD":
+            if self.accounts.card_account_id is None:
+                raise ValidationError("يجب إعداد حساب المدفوعات بالبطاقة قبل البيع بالبطاقة.")
+            return self.accounts.card_account_id
+        raise ValidationError("طريقة الدفع غير مدعومة.")
 
     def post(
         self,
@@ -62,11 +79,18 @@ class SalesPostingService:
         exchange_rate: Decimal = Decimal("1"),
         notes: str | None = None,
     ) -> PostedSale:
+        if request.company_id != company_id:
+            raise ValidationError("الشركة في الطلب لا تطابق الشركة الحالية.")
         totals = self.calculator.calculate(request)
+        exchange_rate = Decimal(str(exchange_rate))
         if exchange_rate <= 0:
             raise ValidationError("سعر الصرف يجب أن يكون أكبر من صفر.")
         if request.payment_method.upper() == "CREDIT" and request.customer_id is None:
             raise ValidationError("البيع الآجل يتطلب اختيار عميل.")
+        if request.payment_method.upper() == "CREDIT" and totals.paid != 0:
+            raise ValidationError("البيع الآجل لا يقبل دفعة عند إنشاء الفاتورة.")
+        if request.payment_method.upper() != "CREDIT" and totals.paid == 0:
+            raise ValidationError("يجب إدخال دفعة لطريقة الدفع المختارة.")
 
         with self.session.begin():
             invoice = SalesInvoice(
@@ -92,28 +116,19 @@ class SalesPostingService:
             total_cost = Decimal("0")
             for line in request.lines:
                 qty = quantity(line.quantity)
-                stock = self.session.scalar(
-                    select(StockBalance)
-                    .where(
-                        StockBalance.company_id == company_id,
-                        StockBalance.warehouse_id == request.warehouse_id,
-                        StockBalance.product_id == line.product_id,
-                    )
-                    .with_for_update()
+                movement = self.stock.issue(
+                    company_id=company_id,
+                    warehouse_id=request.warehouse_id,
+                    product_id=line.product_id,
+                    quantity=qty,
+                    user_id=user_id,
+                    reference_type="SALES_INVOICE",
+                    reference_id=invoice.id,
+                    reference_number=invoice_number,
                 )
-                if stock is None:
-                    raise ValidationError(f"لا يوجد رصيد مخزني للصنف {line.product_id}.")
-                if stock.quantity < qty:
-                    raise ValidationError(f"الرصيد غير كاف للصنف {line.product_id}: المتاح {stock.quantity}، المطلوب {qty}.")
-
-                product = self.session.get(Product, line.product_id)
-                if product is None or product.company_id != company_id:
-                    raise ValidationError(f"الصنف {line.product_id} غير صالح للشركة الحالية.")
-
-                unit_cost = Decimal(str(stock.average_cost or product.purchase_price or 0))
-                line_cost = money(qty * unit_cost)
+                line_cost = money(movement.total_cost)
                 total_cost += line_cost
-                invoice_line = SalesInvoiceLine(
+                self.session.add(SalesInvoiceLine(
                     invoice_id=invoice.id,
                     product_id=line.product_id,
                     quantity=qty,
@@ -122,54 +137,46 @@ class SalesPostingService:
                     tax=Decimal("0"),
                     total=line.total,
                     cost=line_cost,
-                )
-                self.session.add(invoice_line)
+                ))
 
-                stock.quantity = quantity(stock.quantity - qty)
-                stock.total_cost = money(stock.quantity * Decimal(str(stock.average_cost or 0)))
-                movement = StockMovement(
-                    company_id=company_id,
-                    warehouse_id=request.warehouse_id,
-                    product_id=line.product_id,
-                    movement_type="SALE",
-                    quantity=-qty,
-                    unit_cost=unit_cost,
-                    total_cost=-line_cost,
-                    balance_quantity=stock.quantity,
-                    balance_cost=stock.total_cost,
-                    reference_type="SALES_INVOICE",
-                    reference_id=invoice.id,
-                    reference_number=invoice_number,
-                    created_by=user_id,
-                )
-                self.session.add(movement)
+            journal_lines: list[dict] = []
+            method = request.payment_method.upper()
+            if method == "CREDIT":
+                journal_lines.append({"account_id": self.accounts.receivable_account_id, "debit": totals.total, "credit": 0})
+            else:
+                journal_lines.append({"account_id": self._payment_account(method), "debit": totals.paid, "credit": 0})
+                remaining = money(totals.total - totals.paid)
+                if remaining:
+                    if request.customer_id is None:
+                        raise ValidationError("الدفعة الجزئية تتطلب اختيار عميل لباقي المبلغ.")
+                    journal_lines.append({"account_id": self.accounts.receivable_account_id, "debit": remaining, "credit": 0})
 
-            debit_account = self.accounts.cash_account_id if request.payment_method.upper() != "CREDIT" else self.accounts.receivable_account_id
-            lines = [
-                {"account_id": debit_account, "debit": totals.total, "credit": 0, "currency_id": currency_id, "exchange_rate": exchange_rate},
-                {"account_id": self.accounts.sales_account_id, "debit": 0, "credit": totals.total, "currency_id": currency_id, "exchange_rate": exchange_rate},
-            ]
+            journal_lines.append({"account_id": self.accounts.sales_account_id, "debit": 0, "credit": totals.total})
             if total_cost > 0:
-                lines.extend([
-                    {"account_id": self.accounts.cogs_account_id, "debit": total_cost, "credit": 0, "currency_id": currency_id, "exchange_rate": exchange_rate},
-                    {"account_id": self.accounts.inventory_account_id, "debit": 0, "credit": total_cost, "currency_id": currency_id, "exchange_rate": exchange_rate},
+                journal_lines.extend([
+                    {"account_id": self.accounts.cogs_account_id, "debit": total_cost, "credit": 0},
+                    {"account_id": self.accounts.inventory_account_id, "debit": 0, "credit": total_cost},
                 ])
-            validate_lines(lines)
 
+            for line in journal_lines:
+                line.update({"currency_id": currency_id, "exchange_rate": exchange_rate})
+            validate_lines(journal_lines)
+
+            now = datetime.utcnow()
             journal = JournalEntry(
                 company_id=company_id,
                 fiscal_year_id=fiscal_year_id,
                 entry_number=f"SI-{invoice_number}",
-                entry_date=datetime.utcnow(),
+                entry_date=now,
                 status="POSTED",
                 description=f"Sales invoice {invoice_number}",
                 created_by=user_id,
-                posted_at=datetime.utcnow(),
+                posted_at=now,
                 posted_by=user_id,
             )
             self.session.add(journal)
             self.session.flush()
-            for line in lines:
+            for line in journal_lines:
                 debit = money(line["debit"])
                 credit = money(line["credit"])
                 self.session.add(JournalLine(
@@ -185,7 +192,7 @@ class SalesPostingService:
                 ))
 
             invoice.status = "POSTED"
-            invoice.posted_at = datetime.utcnow()
+            invoice.posted_at = now
             self.session.add(AuditLog(
                 company_id=company_id,
                 user_id=user_id,
