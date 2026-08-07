@@ -18,7 +18,10 @@ class JournalEntry(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime)
     posted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
-    __table_args__ = (Index("ix_journal_company_date", "company_id", "entry_date"), Index("ix_journal_company_number", "company_id", "entry_number", unique=True))
+    __table_args__ = (
+        Index("ix_journal_company_date", "company_id", "entry_date"),
+        Index("ix_journal_company_number", "company_id", "entry_number", unique=True),
+    )
 
 
 class JournalLine(Base):
@@ -35,14 +38,19 @@ class JournalLine(Base):
     description: Mapped[str | None] = mapped_column(Text)
 
 
+_EPS = Decimal("0.00000001")
+
+
 def validate_lines(lines: list[dict]) -> None:
     if not lines:
         raise ValidationError("القيد لا يحتوي على أسطر")
+
     debit = Decimal("0")
     credit = Decimal("0")
     debit_base = Decimal("0")
     credit_base = Decimal("0")
     by_currency: dict[int, tuple[Decimal, Decimal]] = {}
+
     for line in lines:
         d = Decimal(str(line.get("debit", 0)))
         c = Decimal(str(line.get("credit", 0)))
@@ -50,26 +58,40 @@ def validate_lines(lines: list[dict]) -> None:
         cb = Decimal(str(line.get("credit_base", 0)))
         rate = Decimal(str(line.get("exchange_rate", 1)))
         currency_id = line.get("currency_id")
+
+        if currency_id is None:
+            raise ValidationError("يجب تحديد العملة لكل سطر محاسبي")
+        if any(value.is_nan() or value.is_infinite() for value in (d, c, db, cb, rate)):
+            raise ValidationError("القيم المحاسبية يجب أن تكون أرقامًا صحيحة")
         if d < 0 or c < 0 or db < 0 or cb < 0:
             raise ValidationError("القيم المدينة والدائنة لا يمكن أن تكون سالبة")
         if d > 0 and c > 0:
             raise ValidationError("كل سطر يجب أن يكون مدينًا أو دائنًا فقط")
+        if d == 0 and c == 0:
+            raise ValidationError("لا يمكن أن يكون السطر المحاسبي بدون مدين أو دائن")
         if rate <= 0:
             raise ValidationError("سعر الصرف يجب أن يكون أكبر من صفر")
-        if d and abs(db - d * rate) > Decimal("0.00000001"):
+
+        if d == 0 and db != 0:
+            raise ValidationError("لا يجوز وجود مكافئ محلي مدين بدون مبلغ مدين")
+        if c == 0 and cb != 0:
+            raise ValidationError("لا يجوز وجود مكافئ محلي دائن بدون مبلغ دائن")
+        if d and abs(db - d * rate) > _EPS:
             raise ValidationError("المكافئ المحلي للمدين غير مطابق لسعر الصرف")
-        if c and abs(cb - c * rate) > Decimal("0.00000001"):
+        if c and abs(cb - c * rate) > _EPS:
             raise ValidationError("المكافئ المحلي للدائن غير مطابق لسعر الصرف")
+
         debit += d
         credit += c
         debit_base += db
         credit_base += cb
-        if currency_id is not None:
-            old_d, old_c = by_currency.get(int(currency_id), (Decimal("0"), Decimal("0")))
-            by_currency[int(currency_id)] = (old_d + d, old_c + c)
-    if debit != credit:
+        key = int(currency_id)
+        old_d, old_c = by_currency.get(key, (Decimal("0"), Decimal("0")))
+        by_currency[key] = (old_d + d, old_c + c)
+
+    if abs(debit - credit) > _EPS:
         raise UnbalancedEntryError(f"القيد غير متوازن: مدين={debit} دائن={credit}")
-    if debit_base != credit_base:
+    if abs(debit_base - credit_base) > _EPS:
         raise UnbalancedEntryError(f"المكافئ المحلي غير متوازن: مدين={debit_base} دائن={credit_base}")
-    if any(d != c for d, c in by_currency.values()):
+    if any(abs(d - c) > _EPS for d, c in by_currency.values()):
         raise UnbalancedEntryError("القيد غير متوازن حسب العملة")
