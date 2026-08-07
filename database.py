@@ -16,7 +16,7 @@ engine = create_engine(
 
 if DATABASE_URL.startswith("sqlite"):
     @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+    def _enable_sqlite_features(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
@@ -29,6 +29,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 def initialize_database():
     import models  # noqa: F401
+    import accounting.journal  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
 
