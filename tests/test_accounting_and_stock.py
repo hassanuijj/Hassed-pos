@@ -38,9 +38,25 @@ def make_stock(session, costing_method="FIFO"):
 
 
 def test_journal_lines_must_balance():
-    validate_lines([{"debit": Decimal("100"), "credit": Decimal("100")}])
+    # Each journal line represents one side of the entry. A balanced entry
+    # therefore uses separate debit and credit lines rather than putting both
+    # amounts on the same line.
+    validate_lines([
+        {"debit": Decimal("100"), "credit": Decimal("0"), "debit_base": Decimal("100"), "credit_base": Decimal("0")},
+        {"debit": Decimal("0"), "credit": Decimal("100"), "debit_base": Decimal("0"), "credit_base": Decimal("100")},
+    ])
     with pytest.raises(UnbalancedEntryError):
-        validate_lines([{"debit": Decimal("100"), "credit": Decimal("90")}])
+        validate_lines([
+            {"debit": Decimal("100"), "credit": Decimal("0"), "debit_base": Decimal("100"), "credit_base": Decimal("0")},
+            {"debit": Decimal("0"), "credit": Decimal("90"), "debit_base": Decimal("0"), "credit_base": Decimal("90")},
+        ])
+
+
+def test_journal_line_cannot_have_both_debit_and_credit():
+    with pytest.raises(Exception, match="مدينًا أو دائنًا"):
+        validate_lines([
+            {"debit": Decimal("100"), "credit": Decimal("100"), "debit_base": Decimal("100"), "credit_base": Decimal("100")},
+        ])
 
 
 def test_fifo_stock_costing():
