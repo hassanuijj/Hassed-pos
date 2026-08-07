@@ -39,12 +39,12 @@ def test_nested_transaction_does_not_commit_early():
         conn.execute(text("create table t (value integer)"))
 
     with Session(engine) as session:
-        with transaction(session):
-            session.execute(text("insert into t(value) values (1)"))
+        with pytest.raises(RuntimeError):
             with transaction(session):
-                session.execute(text("insert into t(value) values (2)"))
-            raise RuntimeError("outer failure")
+                session.execute(text("insert into t(value) values (1)"))
+                with transaction(session):
+                    session.execute(text("insert into t(value) values (2)"))
+                raise RuntimeError("outer failure")
 
-        
     with Session(engine) as check:
         assert check.execute(text("select count(*) from t")).scalar_one() == 0
