@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
 
 
@@ -76,6 +76,34 @@ class Account(Base):
     is_group: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     __table_args__ = (UniqueConstraint("company_id", "code", name="uq_account_company_code"), Index("ix_account_parent", "parent_id"))
+
+
+class Customer(Base):
+    __tablename__ = "customers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(60), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(50), index=True)
+    address: Mapped[str | None] = mapped_column(String(500))
+    credit_limit: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("company_id", "code", name="uq_customer_company_code"), Index("ix_customer_name", "name"))
+
+
+class Supplier(Base):
+    __tablename__ = "suppliers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(60), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(50), index=True)
+    address: Mapped[str | None] = mapped_column(String(500))
+    credit_limit: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("company_id", "code", name="uq_supplier_company_code"), Index("ix_supplier_name", "name"))
 
 
 class Unit(Base):
