@@ -1,9 +1,9 @@
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from core.exceptions import InsufficientStockError, NotFoundError, ValidationError
-from models import Product, Warehouse, StockBalance, StockMovement
+from models import Product, Warehouse, StockBalance, StockMovement, StockCostLayer
 
 
 class StockService:
@@ -56,7 +56,28 @@ class StockService:
         balance.average_cost = new_cost / new_qty if new_qty else Decimal("0")
         self.session.add(movement)
         self.session.flush()
+        self.session.add(StockCostLayer(company_id=company_id, warehouse_id=warehouse_id, product_id=product_id, source_movement_id=movement.id, original_quantity=qty, remaining_quantity=qty, unit_cost=cost, created_at=datetime.utcnow(), active=True))
+        self.session.flush()
         return movement
+
+    def _issue_fifo(self, company_id: int, warehouse_id: int, product_id: int, quantity: Decimal) -> Decimal:
+        layers = self.session.scalars(select(StockCostLayer).where(StockCostLayer.company_id == company_id, StockCostLayer.warehouse_id == warehouse_id, StockCostLayer.product_id == product_id, StockCostLayer.remaining_quantity > 0, StockCostLayer.active.is_(True)).order_by(StockCostLayer.created_at, StockCostLayer.id).with_for_update()).all()
+        available = sum((self.dec(layer.remaining_quantity) for layer in layers), Decimal("0"))
+        if quantity > available:
+            raise InsufficientStockError(f"المخزون غير كافٍ: المتاح {available} والمطلوب {quantity}")
+        remaining = quantity
+        total_cost = Decimal("0")
+        for layer in layers:
+            if remaining <= 0:
+                break
+            used = min(remaining, self.dec(layer.remaining_quantity))
+            total_cost += used * self.dec(layer.unit_cost)
+            layer.remaining_quantity = self.dec(layer.remaining_quantity) - used
+            if layer.remaining_quantity <= 0:
+                layer.remaining_quantity = Decimal("0")
+                layer.active = False
+            remaining -= used
+        return total_cost
 
     def issue(self, *, company_id: int, warehouse_id: int, product_id: int, quantity, user_id: int, reference_type=None, reference_id=None, reference_number=None):
         qty = self.dec(quantity)
@@ -67,8 +88,26 @@ class StockService:
         available = self.dec(balance.quantity)
         if qty > available:
             raise InsufficientStockError(f"المخزون غير كافٍ: المتاح {available} والمطلوب {qty}")
-        unit_cost = self.dec(balance.average_cost)
-        total_cost = qty * unit_cost
+        method = (product.costing_method or "WEIGHTED_AVERAGE").upper()
+        if method == "FIFO":
+            total_cost = self._issue_fifo(company_id, warehouse_id, product_id, qty)
+        elif method in {"WEIGHTED_AVERAGE", "AVERAGE"}:
+            unit_cost = self.dec(balance.average_cost)
+            total_cost = qty * unit_cost
+            layers = self.session.scalars(select(StockCostLayer).where(StockCostLayer.company_id == company_id, StockCostLayer.warehouse_id == warehouse_id, StockCostLayer.product_id == product_id, StockCostLayer.remaining_quantity > 0, StockCostLayer.active.is_(True)).order_by(StockCostLayer.created_at, StockCostLayer.id).with_for_update()).all()
+            remaining = qty
+            for layer in layers:
+                if remaining <= 0:
+                    break
+                used = min(remaining, self.dec(layer.remaining_quantity))
+                layer.remaining_quantity = self.dec(layer.remaining_quantity) - used
+                if layer.remaining_quantity <= 0:
+                    layer.remaining_quantity = Decimal("0")
+                    layer.active = False
+                remaining -= used
+        else:
+            raise ValidationError(f"طريقة تقييم المخزون غير مدعومة: {product.costing_method}")
+        unit_cost = total_cost / qty if qty else Decimal("0")
         new_qty = available - qty
         new_cost = self.dec(balance.total_cost) - total_cost
         if new_qty == 0:
