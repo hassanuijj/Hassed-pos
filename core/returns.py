@@ -21,9 +21,12 @@ class ReturnLine:
     @property
     def net(self) -> Decimal:
         quantity = Decimal(str(self.quantity))
+        amount = Decimal(str(self.unit_amount))
         if quantity <= 0:
             raise ValidationError("كمية المرتجع يجب أن تكون أكبر من صفر.")
-        return money(quantity * Decimal(str(self.unit_amount)))
+        if amount < 0:
+            raise ValidationError("قيمة السطر لا يمكن أن تكون سالبة.")
+        return money(quantity * amount)
 
     @property
     def total(self) -> Decimal:
@@ -47,3 +50,18 @@ class ReturnService:
         if not lines:
             raise ValidationError("المرتجع يجب أن يحتوي على سطر واحد على الأقل.")
         return money(sum((line.total for line in lines), Decimal("0")))
+
+    def validate_against_original(self, returned_lines, original_lines):
+        original = {}
+        for line in original_lines:
+            product_id = line["product_id"]
+            original[product_id] = original.get(product_id, Decimal("0")) + Decimal(str(line["quantity"]))
+
+        returned = {}
+        for line in returned_lines:
+            product_id = line["product_id"]
+            returned[product_id] = returned.get(product_id, Decimal("0")) + Decimal(str(line["quantity"]))
+
+        for product_id, qty in returned.items():
+            self.validate_quantity(qty, original.get(product_id, Decimal("0")))
+        return True
