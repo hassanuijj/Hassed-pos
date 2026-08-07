@@ -39,6 +39,7 @@ class CheckoutRequest:
     payment_method: str
     paid_amount: Decimal
     lines: tuple[POSLine, ...]
+    company_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -54,12 +55,18 @@ class POSCheckoutService:
     def calculate(self, request: CheckoutRequest) -> CheckoutTotals:
         if not request.lines:
             raise ValidationError("الفاتورة يجب أن تحتوي على صنف واحد على الأقل.")
+        if request.company_id <= 0:
+            raise ValidationError("الشركة غير صالحة.")
         if request.warehouse_id <= 0:
             raise ValidationError("المخزن غير صالح.")
+        if request.payment_method not in {"CASH", "CARD", "BANK", "CREDIT"}:
+            raise ValidationError("طريقة الدفع غير مدعومة.")
         subtotal = money(sum((money(x.quantity * x.unit_price) for x in request.lines), Decimal("0")))
         discount = money(sum((money(x.discount) for x in request.lines), Decimal("0")))
         total = money(sum((x.total for x in request.lines), Decimal("0")))
         paid = money(request.paid_amount)
+        if request.payment_method == "CREDIT" and paid != 0:
+            raise ValidationError("فاتورة الآجل يجب أن تكون بدون دفعة في عملية الإنشاء.")
         if paid < 0 or paid > total:
             raise ValidationError("قيمة المدفوع غير صالحة.")
         return CheckoutTotals(subtotal, discount, total, paid, money(total - paid))
