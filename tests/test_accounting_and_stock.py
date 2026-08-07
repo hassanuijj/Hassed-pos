@@ -34,34 +34,60 @@ def make_stock(session, costing_method="FIFO"):
     product = Product(company_id=company.id, code="P1", name="Product", unit_id=unit.id, costing_method=costing_method)
     session.add(product)
     session.commit()
-    return company, user, warehouse, product
+    return company, user, warehouse, product, currency
+
+
+def balanced_lines():
+    return [
+        {"currency_id": 1, "debit": Decimal("100"), "credit": Decimal("0"), "debit_base": Decimal("100"), "credit_base": Decimal("0")},
+        {"currency_id": 1, "debit": Decimal("0"), "credit": Decimal("100"), "debit_base": Decimal("0"), "credit_base": Decimal("100")},
+    ]
 
 
 def test_journal_lines_must_balance():
-    # Each journal line represents one side of the entry. A balanced entry
-    # therefore uses separate debit and credit lines rather than putting both
-    # amounts on the same line.
-    validate_lines([
-        {"debit": Decimal("100"), "credit": Decimal("0"), "debit_base": Decimal("100"), "credit_base": Decimal("0")},
-        {"debit": Decimal("0"), "credit": Decimal("100"), "debit_base": Decimal("0"), "credit_base": Decimal("100")},
-    ])
+    validate_lines(balanced_lines())
     with pytest.raises(UnbalancedEntryError):
         validate_lines([
-            {"debit": Decimal("100"), "credit": Decimal("0"), "debit_base": Decimal("100"), "credit_base": Decimal("0")},
-            {"debit": Decimal("0"), "credit": Decimal("90"), "debit_base": Decimal("0"), "credit_base": Decimal("90")},
+            balanced_lines()[0],
+            {"currency_id": 1, "debit": Decimal("0"), "credit": Decimal("90"), "debit_base": Decimal("0"), "credit_base": Decimal("90")},
         ])
 
 
 def test_journal_line_cannot_have_both_debit_and_credit():
     with pytest.raises(Exception, match="مدينًا أو دائنًا"):
-        validate_lines([
-            {"debit": Decimal("100"), "credit": Decimal("100"), "debit_base": Decimal("100"), "credit_base": Decimal("100")},
-        ])
+        validate_lines([{
+            "currency_id": 1,
+            "debit": Decimal("100"),
+            "credit": Decimal("100"),
+            "debit_base": Decimal("100"),
+            "credit_base": Decimal("100"),
+        }])
+
+
+def test_journal_line_requires_currency():
+    with pytest.raises(Exception, match="العملة"):
+        validate_lines([{
+            "debit": Decimal("100"),
+            "credit": Decimal("0"),
+            "debit_base": Decimal("100"),
+            "credit_base": Decimal("0"),
+        }])
+
+
+def test_journal_line_rejects_zero_amount():
+    with pytest.raises(Exception, match="بدون مدين أو دائن"):
+        validate_lines([{
+            "currency_id": 1,
+            "debit": Decimal("0"),
+            "credit": Decimal("0"),
+            "debit_base": Decimal("0"),
+            "credit_base": Decimal("0"),
+        }])
 
 
 def test_fifo_stock_costing():
     session = make_session()
-    company, user, warehouse, product = make_stock(session, "FIFO")
+    company, user, warehouse, product, _currency = make_stock(session, "FIFO")
     service = StockService(session)
     service.receive(company_id=company.id, warehouse_id=warehouse.id, product_id=product.id, quantity=100, unit_cost=10, user_id=user.id)
     service.receive(company_id=company.id, warehouse_id=warehouse.id, product_id=product.id, quantity=50, unit_cost=12, user_id=user.id)
@@ -71,7 +97,7 @@ def test_fifo_stock_costing():
 
 def test_stock_rejects_over_issue():
     session = make_session()
-    company, user, warehouse, product = make_stock(session, "WEIGHTED_AVERAGE")
+    company, user, warehouse, product, _currency = make_stock(session, "WEIGHTED_AVERAGE")
     service = StockService(session)
     service.receive(company_id=company.id, warehouse_id=warehouse.id, product_id=product.id, quantity=5, unit_cost=10, user_id=user.id)
     with pytest.raises(InsufficientStockError):
