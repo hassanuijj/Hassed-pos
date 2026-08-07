@@ -30,6 +30,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 def initialize_database():
     import models  # noqa: F401
     import accounting.journal  # noqa: F401
+    import sales.models  # noqa: F401
+    import purchases.models  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
 
