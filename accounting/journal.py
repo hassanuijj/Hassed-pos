@@ -18,7 +18,7 @@ class JournalEntry(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime)
     posted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
-    __table_args__ = (Index("ix_journal_company_date", "company_id", "entry_date"),)
+    __table_args__ = (Index("ix_journal_company_date", "company_id", "entry_date"), Index("ix_journal_company_number", "company_id", "entry_number", unique=True))
 
 
 class JournalLine(Base):
@@ -38,12 +38,38 @@ class JournalLine(Base):
 def validate_lines(lines: list[dict]) -> None:
     if not lines:
         raise ValidationError("القيد لا يحتوي على أسطر")
-    debit = sum((Decimal(str(x.get("debit", 0))) for x in lines), Decimal("0"))
-    credit = sum((Decimal(str(x.get("credit", 0))) for x in lines), Decimal("0"))
-    if debit != credit:
-        raise UnbalancedEntryError(f"القيد غير متوازن: مدين={debit} دائن={credit}")
+    debit = Decimal("0")
+    credit = Decimal("0")
+    debit_base = Decimal("0")
+    credit_base = Decimal("0")
+    by_currency: dict[int, tuple[Decimal, Decimal]] = {}
     for line in lines:
         d = Decimal(str(line.get("debit", 0)))
         c = Decimal(str(line.get("credit", 0)))
-        if d < 0 or c < 0 or (d > 0 and c > 0):
-            raise ValidationError("كل سطر يجب أن يكون مدينًا أو دائنًا فقط وبقيمة غير سالبة")
+        db = Decimal(str(line.get("debit_base", 0)))
+        cb = Decimal(str(line.get("credit_base", 0)))
+        rate = Decimal(str(line.get("exchange_rate", 1)))
+        currency_id = line.get("currency_id")
+        if d < 0 or c < 0 or db < 0 or cb < 0:
+            raise ValidationError("القيم المدينة والدائنة لا يمكن أن تكون سالبة")
+        if d > 0 and c > 0:
+            raise ValidationError("كل سطر يجب أن يكون مدينًا أو دائنًا فقط")
+        if rate <= 0:
+            raise ValidationError("سعر الصرف يجب أن يكون أكبر من صفر")
+        if d and abs(db - d * rate) > Decimal("0.00000001"):
+            raise ValidationError("المكافئ المحلي للمدين غير مطابق لسعر الصرف")
+        if c and abs(cb - c * rate) > Decimal("0.00000001"):
+            raise ValidationError("المكافئ المحلي للدائن غير مطابق لسعر الصرف")
+        debit += d
+        credit += c
+        debit_base += db
+        credit_base += cb
+        if currency_id is not None:
+            old_d, old_c = by_currency.get(int(currency_id), (Decimal("0"), Decimal("0")))
+            by_currency[int(currency_id)] = (old_d + d, old_c + c)
+    if debit != credit:
+        raise UnbalancedEntryError(f"القيد غير متوازن: مدين={debit} دائن={credit}")
+    if debit_base != credit_base:
+        raise UnbalancedEntryError(f"المكافئ المحلي غير متوازن: مدين={debit_base} دائن={credit_base}")
+    if any(d != c for d, c in by_currency.values()):
+        raise UnbalancedEntryError("القيد غير متوازن حسب العملة")
