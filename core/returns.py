@@ -9,7 +9,10 @@ CENT = Decimal("0.01")
 
 
 def money(value) -> Decimal:
-    return Decimal(str(value or 0)).quantize(CENT, rounding=ROUND_HALF_UP)
+    try:
+        return Decimal(str(value or 0)).quantize(CENT, rounding=ROUND_HALF_UP)
+    except Exception as exc:
+        raise ValidationError("القيمة المالية غير صحيحة.") from exc
 
 
 @dataclass(frozen=True)
@@ -21,7 +24,7 @@ class ReturnLine:
     @property
     def net(self) -> Decimal:
         quantity = Decimal(str(self.quantity))
-        amount = Decimal(str(self.unit_amount))
+        amount = money(self.unit_amount)
         if quantity <= 0:
             raise ValidationError("كمية المرتجع يجب أن تكون أكبر من صفر.")
         if amount < 0:
@@ -38,8 +41,13 @@ class ReturnLine:
 
 class ReturnService:
     def validate_quantity(self, returned, original) -> Decimal:
-        returned = Decimal(str(returned))
-        original = Decimal(str(original))
+        try:
+            returned = Decimal(str(returned))
+            original = Decimal(str(original))
+        except Exception as exc:
+            raise ValidationError("كمية المرتجع غير صحيحة.") from exc
+        if original < 0:
+            raise ValidationError("الكمية الأصلية لا يمكن أن تكون سالبة.")
         if returned <= 0:
             raise ValidationError("كمية المرتجع يجب أن تكون أكبر من صفر.")
         if returned > original:
@@ -55,13 +63,31 @@ class ReturnService:
         original = {}
         for line in original_lines:
             product_id = line["product_id"]
-            original[product_id] = original.get(product_id, Decimal("0")) + Decimal(str(line["quantity"]))
+            qty = Decimal(str(line["quantity"]))
+            if qty < 0:
+                raise ValidationError("الكمية الأصلية لا يمكن أن تكون سالبة.")
+            original[product_id] = original.get(product_id, Decimal("0")) + qty
 
         returned = {}
         for line in returned_lines:
             product_id = line["product_id"]
-            returned[product_id] = returned.get(product_id, Decimal("0")) + Decimal(str(line["quantity"]))
+            qty = Decimal(str(line["quantity"]))
+            returned[product_id] = returned.get(product_id, Decimal("0")) + qty
 
         for product_id, qty in returned.items():
             self.validate_quantity(qty, original.get(product_id, Decimal("0")))
         return True
+
+    def prepare_sales_return(self, returned_lines, original_lines):
+        self.validate_against_original(returned_lines, original_lines)
+        return {"type": "sales_return", "items": returned_lines, "total": self.total([
+            ReturnLine(x["quantity"], x.get("unit_amount", x.get("price", 0)), x.get("tax", 0))
+            for x in returned_lines
+        ])}
+
+    def prepare_purchase_return(self, returned_lines, original_lines):
+        self.validate_against_original(returned_lines, original_lines)
+        return {"type": "purchase_return", "items": returned_lines, "total": self.total([
+            ReturnLine(x["quantity"], x.get("unit_amount", x.get("price", 0)), x.get("tax", 0))
+            for x in returned_lines
+        ])}
