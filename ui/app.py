@@ -1,6 +1,6 @@
 from __future__ import annotations
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, simpledialog
 from core.system import SystemBootstrap
 from core.security import SecurityError
 
@@ -45,31 +45,29 @@ class HassedPOSApp(tk.Tk):
         for r in rows: tree.insert("","end",values=(r["name"],r["barcode"],r["sale_price"],r["min_stock"]))
     def _master(self,p,name):
         kind="customers" if name=="العملاء" else "suppliers"; rows=getattr(self.app.master,kind)(); tree=self._tree(p,["الاسم","الهاتف"])
-        for r in rows: tree.insert("","end",values=(r["name"],r.get("phone","") if hasattr(r,"get") else ""))
+        for r in rows: tree.insert("","end",values=(r["name"],r["phone"] if "phone" in r.keys() else ""))
     def _transaction(self,p,kind):
-        party=ttk.Entry(p,width=28); party.insert(0,"معرّف العميل/المورد"); party.pack(fill="x",pady=5)
-        ref=ttk.Entry(p,width=28); ref.insert(0,"رقم الفاتورة"); ref.pack(fill="x",pady=5)
-        ttk.Label(p,text="للتسجيل الكامل استخدم خدمة ERP لإرسال قائمة البنود والكمية والسعر.").pack(pady=20)
-        ttk.Button(p,text="فتح سجل العمليات",command=lambda:self._document_list(p,kind)).pack(fill="x")
-    def _document_list(self,p,kind):
+        box=ttk.LabelFrame(p,text="عملية جديدة",padding=15); box.pack(fill="x",pady=10)
+        ttk.Label(box,text="مرجع الفاتورة").grid(row=0,column=0,padx=5,pady=5); ref=ttk.Entry(box); ref.grid(row=0,column=1,padx=5,pady=5)
+        ttk.Label(box,text="معرّف العميل/المورد").grid(row=1,column=0,padx=5,pady=5); party=ttk.Entry(box); party.grid(row=1,column=1,padx=5,pady=5)
+        ttk.Label(box,text="الإجراء التشغيلي الكامل يستقبل البنود من طبقة ERP.").grid(row=2,column=0,columnspan=2,pady=10)
+        ttk.Button(box,text="عرض السجل",command=lambda:self._document_list(kind)).grid(row=3,column=0,columnspan=2,sticky="ew")
+    def _document_list(self,kind):
         typ="sale" if kind=="sale" else "purchase"; rows=self.app.db.fetchall("SELECT reference,total,paid,created_at FROM documents WHERE document_type=? ORDER BY created_at DESC",(typ,)); self._show_rows(rows)
     def _cash(self,p):
         ttk.Label(p,text=f"رصيد الصندوق: {self.app.finance.cash_balance()}",font=("Arial",20,"bold")).pack(pady=20)
         rows=self.app.db.fetchall("SELECT reference,transaction_type,amount,description,created_at FROM cash_transactions ORDER BY created_at DESC"); self._show_rows(rows)
     def _accounting(self,p):
-        ttk.Button(p,text="ميزان المراجعة",command=lambda:self._show_rows(self.app.trial_balance())).pack(fill="x",pady=5)
-        ttk.Button(p,text="دفتر الأستاذ",command=lambda:self._ledger_prompt()).pack(fill="x",pady=5)
+        ttk.Button(p,text="ميزان المراجعة",command=lambda:self._show_rows(self.app.trial_balance())).pack(fill="x",pady=5); ttk.Button(p,text="دفتر الأستاذ",command=self._ledger_prompt).pack(fill="x",pady=5)
     def _ledger_prompt(self):
-        code=tk.simpledialog.askstring("دفتر الأستاذ","رمز الحساب")
+        code=simpledialog.askstring("دفتر الأستاذ","رمز الحساب",parent=self)
         if code:
             try:self._show_rows(self.app.finance.ledger(code))
             except Exception as e:messagebox.showerror("المحاسبة",str(e))
     def _reports(self,p):
-        ttk.Button(p,text="ميزان المراجعة",command=lambda:self._show_rows(self.app.trial_balance())).pack(fill="x",pady=5)
-        ttk.Button(p,text="قائمة الدخل",command=lambda:self._show_dict(self.app.income_statement())).pack(fill="x",pady=5)
-        ttk.Button(p,text="الميزانية",command=lambda:self._show_dict(self.app.balance_sheet())).pack(fill="x",pady=5)
+        ttk.Button(p,text="ميزان المراجعة",command=lambda:self._show_rows(self.app.trial_balance())).pack(fill="x",pady=5); ttk.Button(p,text="قائمة الدخل",command=lambda:self._show_dict(self.app.income_statement())).pack(fill="x",pady=5); ttk.Button(p,text="الميزانية",command=lambda:self._show_dict(self.app.balance_sheet())).pack(fill="x",pady=5)
     def _tree(self,p,columns):
-        t=ttk.Treeview(p,columns=columns,show="headings");
+        t=ttk.Treeview(p,columns=columns,show="headings")
         for c in columns:t.heading(c,text=c);t.column(c,width=180)
         t.pack(fill="both",expand=True);return t
     def _show_rows(self,rows):
