@@ -8,11 +8,15 @@ from core.backup import BackupService
 from core.closing import ClosingService
 from core.smart import SmartAssistant
 from core.smart_analytics import SmartAnalytics
+from core.startup_automation import StartupAutomation
+from core.automation import AutomationService
+from core.task_center import TaskCenter
 
 class HassedPOSApp(tk.Tk):
     def __init__(self):
         super().__init__(); self.title("Hassed POS - ERP"); self.geometry("1200x760"); self.minsize(1000,650)
-        self.bootstrap=SystemBootstrap(); self.app=self.bootstrap.initialize(); self.workday=WorkdayService(self.app.db); self.closing=ClosingService(self.app.db,self.app.finance); self.smart=SmartAssistant(self.app.db); self.analytics=SmartAnalytics(self.app.db); self._build_login()
+        self.bootstrap=SystemBootstrap(); self.app=self.bootstrap.initialize(); self.workday=WorkdayService(self.app.db); self.closing=ClosingService(self.app.db,self.app.finance); self.smart=SmartAssistant(self.app.db); self.analytics=SmartAnalytics(self.app.db)
+        self.automation=AutomationService(self.app.db,self.app.db.path); self.task_center=TaskCenter(self.automation); self.startup_status=StartupAutomation(self.app).run(backup=True); self._build_login()
     def _clear(self):
         for w in self.winfo_children(): w.destroy()
     def _build_login(self):
@@ -25,20 +29,22 @@ class HassedPOSApp(tk.Tk):
         try: self.app.login(u,p); self._build_dashboard()
         except SecurityError as e: messagebox.showerror("تسجيل الدخول",str(e))
     def _build_dashboard(self):
-        self._clear(); self.bind_all("<Control-f>",lambda e:self._quick_search()); self.bind_all("<F5>",lambda e:self._build_dashboard()); self.bind_all("<Control-b>",lambda e:self._backup()); self.bind_all("<Control-k>",lambda e:self._closing()); self.bind_all("<Control-i>",lambda e:self._insights())
+        self._clear(); self.bind_all("<Control-f>",lambda e:self._quick_search()); self.bind_all("<F5>",lambda e:self._build_dashboard()); self.bind_all("<Control-b>",lambda e:self._backup()); self.bind_all("<Control-k>",lambda e:self._closing()); self.bind_all("<Control-i>",lambda e:self._insights()); self.bind_all("<Control-t>",lambda e:self._tasks())
         top=ttk.Frame(self,padding=12); top.pack(fill="x"); ttk.Label(top,text="Hassed POS",font=("Arial",22,"bold")).pack(side="left")
-        for text,cmd in [("بحث Ctrl+F",self._quick_search),("نسخ Ctrl+B",self._backup),("إغلاق Ctrl+K",self._closing),("ذكاء Ctrl+I",self._insights)]: ttk.Button(top,text=text,command=cmd).pack(side="left",padx=4)
+        for text,cmd in [("بحث Ctrl+F",self._quick_search),("نسخ Ctrl+B",self._backup),("إغلاق Ctrl+K",self._closing),("ذكاء Ctrl+I",self._insights),("مهام Ctrl+T",self._tasks)]: ttk.Button(top,text=text,command=cmd).pack(side="left",padx=4)
         ttk.Button(top,text="تسجيل الخروج",command=self._build_login).pack(side="right")
         body=ttk.Frame(self,padding=15); body.pack(fill="both",expand=True); daily=self.workday.today(); d=self.app.dashboard(); vals=[("مبيعات اليوم",daily["sales"]),("مشتريات اليوم",daily["purchases"]),("مصروفات اليوم",daily["expenses"]),("الصندوق",d["cash"])]
         cards=ttk.Frame(body); cards.pack(fill="x")
         for i,(t,v) in enumerate(vals): c=ttk.LabelFrame(cards,text=t,padding=18); c.grid(row=0,column=i,padx=6,sticky="nsew"); ttk.Label(c,text=str(v),font=("Arial",18,"bold")).pack(); cards.columnconfigure(i,weight=1)
-        alerts=ttk.LabelFrame(body,text=f"تنبيهات ({len(daily['alerts'])})",padding=10); alerts.pack(fill="x",pady=8)
+        status=ttk.LabelFrame(body,text="حالة التشغيل",padding=8); status.pack(fill="x",pady=7)
+        events=self.startup_status.get("events",[]); ok=sum(e.get("status")=="ok" for e in events); ttk.Label(status,text=f"الفحوصات: {ok}/{len(events)} ناجحة   |   آخر تشغيل: {self.startup_status.get('at','-')}").pack(anchor="w")
+        alerts=ttk.LabelFrame(body,text=f"تنبيهات ({len(daily['alerts'])})",padding=10); alerts.pack(fill="x",pady=7)
         for a in daily["alerts"]: ttk.Label(alerts,text=f"• {a['title']}: {a['message']}").pack(anchor="w")
         if not daily["alerts"]: ttk.Label(alerts,text="لا توجد تنبيهات حالية").pack(anchor="w")
-        smart=self.smart.insights()+self.analytics.insights(); box=ttk.LabelFrame(body,text=f"المساعد الذكي ({len(smart)})",padding=10); box.pack(fill="x",pady=8)
+        smart=self.smart.insights()+self.analytics.insights(); box=ttk.LabelFrame(body,text=f"المساعد الذكي ({len(smart)})",padding=10); box.pack(fill="x",pady=7)
         for item in smart[:8]: ttk.Label(box,text=f"• [{item['priority']}] {item['title']}: {item['message']}").pack(anchor="w")
         if not smart: ttk.Label(box,text="لا توجد توصيات حالية").pack(anchor="w")
-        modules=ttk.LabelFrame(body,text="الوحدات",padding=15); modules.pack(fill="both",expand=True,pady=8); names=["المبيعات","المشتريات","المخزون","العملاء","الموردون","الصندوق","المحاسبة","التقارير"]
+        modules=ttk.LabelFrame(body,text="الوحدات",padding=15); modules.pack(fill="both",expand=True,pady=7); names=["المبيعات","المشتريات","المخزون","العملاء","الموردون","الصندوق","المحاسبة","التقارير"]
         for i,n in enumerate(names): ttk.Button(modules,text=n,command=lambda x=n:self._module(x)).grid(row=i//4,column=i%4,padx=8,pady=8,sticky="nsew",ipadx=25,ipady=18)
         for i in range(4): modules.columnconfigure(i,weight=1)
     def _quick_search(self):
@@ -51,6 +57,7 @@ class HassedPOSApp(tk.Tk):
         result=self.closing.can_close(); self._show_dict(result["summary"])
         if result["ok"]: messagebox.showinfo("إغلاق اليوم","تمت مراجعة ملخص اليوم بنجاح.")
     def _insights(self): self._show_rows(self.smart.insights()+self.analytics.insights())
+    def _tasks(self): self._show_rows(self.task_center.dashboard()["tasks"])
     def _module(self,name):
         self._clear(); top=ttk.Frame(self,padding=12); top.pack(fill="x"); ttk.Button(top,text="← الرئيسية",command=self._build_dashboard).pack(side="left"); ttk.Label(top,text=name,font=("Arial",20,"bold")).pack(side="right"); f=ttk.Frame(self,padding=20); f.pack(fill="both",expand=True)
         if name=="المخزون":self._inventory(f)
